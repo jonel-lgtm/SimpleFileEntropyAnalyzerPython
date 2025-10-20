@@ -1,0 +1,300 @@
+import math
+import sys
+import pefile
+import os
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+
+
+# NOTE: This line requires 'pip install python-magic' and libmagic on Windows.
+# The GUI will handle this gracefully if the module is missing.
+try:
+    import magic 
+    MAGIC_AVAILABLE = True
+except ImportError:
+    MAGIC_AVAILABLE = False
+
+
+def calculate_shannon_entropy(data):
+    """
+    Calculate the Shannon Entropy of a byte string.
+    Entropy = - sum(p_i * log2(p_i))
+    """
+    if not data:
+        return 0.0
+
+    byte_counts = [0] * 256
+    for byte in data:
+        byte_counts[byte] += 1
+
+    file_size = len(data)
+    entropy = 0.0
+
+    for count in byte_counts:
+        if count > 0:
+            p_i = count / file_size
+            entropy -= p_i * math.log2(p_i)
+
+    return entropy
+
+class EntropyAnalyzerApp:
+    def __init__(self, master):
+        self.master = master
+        master.title("File Entropy Analyzer")
+        master.geometry("550x380") # Set initial window size
+        master.resizable(False, False) # Disable resizing
+
+        self.threshold = tk.DoubleVar(value=7.0)
+        self.file_path = tk.StringVar()
+        
+        # --- Configure Styles ---
+        style = ttk.Style()
+        style.configure("TLabel", font=("Segoe UI", 10))
+        style.configure("TButton", font=("Segoe UI", 10, "bold"))
+
+        # --- File Selection Frame ---
+        file_frame = ttk.LabelFrame(master, text="File Selection", padding="10")
+        file_frame.pack(padx=10, pady=10, fill="x")
+
+        ttk.Label(file_frame, text="File Path:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        
+        self.path_entry = ttk.Entry(file_frame, textvariable=self.file_path, width=50)
+        self.path_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+
+        self.browse_button = ttk.Button(file_frame, text="Browse", command=self.browse_file)
+        self.browse_button.grid(row=0, column=2, padx=5, pady=5)
+        
+        ttk.Label(file_frame, text="Threshold (Max 8.0):").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        self.threshold_entry = ttk.Entry(file_frame, textvariable=self.threshold, width=10)
+        self.threshold_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        
+        self.analyze_button = ttk.Button(file_frame, text="Analyze File", command=self.run_analysis)
+        self.analyze_button.grid(row=2, column=0, columnspan=3, pady=10)
+
+        # --- Results Frame ---
+        results_frame = ttk.LabelFrame(master, text="Analysis Results", padding="10")
+        results_frame.pack(padx=10, pady=5, fill="both", expand=True)
+
+        self.results_text = tk.Text(results_frame, height=10, width=60, state='disabled', wrap='word', font=("Consolas", 9))
+        self.results_text.pack(fill="both", expand=True)
+        
+        # Add scrollbar
+        scrollbar = ttk.Scrollbar(results_frame, command=self.results_text.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.results_text['yscrollcommand'] = scrollbar.set
+
+
+    def browse_file(self):
+        # Open file dialog for user to select a file
+        filename = filedialog.askopenfilename(
+            title="Select a file to analyze",
+            filetypes=(("All files", "*.*"),)
+        )
+        if filename:
+            self.file_path.set(filename)
+
+    def log(self, message, tag=None):
+        # Enables, inserts, and then disables the text widget for read-only logging
+        self.results_text.config(state='normal')
+        self.results_text.insert(tk.END, message + "\n", tag)
+        self.results_text.config(state='disabled')
+        self.results_text.see(tk.END) # Scroll to bottom
+
+    def clear_log(self):
+        self.results_text.config(state='normal')
+        self.results_text.delete('1.0', tk.END)
+        self.results_text.config(state='disabled')
+        
+    def run_analysis(self):
+        self.clear_log()
+        file_path = self.file_path.get()
+        
+        try:
+            threshold = self.threshold.get()
+            if not 0 <= threshold <= 8.0:
+                 self.log(f"❌ Error: Threshold must be between 0.0 and 8.0.", "error")
+                 return
+        except tk.TclError:
+            self.log(f"❌ Error: Invalid threshold value.", "error")
+            return
+
+        if not os.path.exists(file_path):
+            self.log(f"❌ Error: File not found at {file_path}", "error")
+            return
+            
+        self.log(f"Analyzing file: {file_path}")
+        self.log(f"Using Threshold: {threshold:.2f}")
+        self.log("-" * 50)
+        
+        # --- Entropy Calculation ---
+        try:
+            with open(file_path, 'rb') as f:
+                file_data = f.read()
+        except Exception as e:
+            self.log(f"❌ Error reading file: {e}", "error")
+            return
+
+        entropy_score = calculate_shannon_entropy(file_data)
+        self.log(f"Entropy Score: {entropy_score:.4f} (Max is 8.0)")
+
+        if entropy_score >= threshold:
+            self.log("🚨 **SUSPICIOUS: High Entropy Detected!**", "suspicious")
+            self.log(f"Score ({entropy_score:.4f}) >= Threshold ({threshold:.2f}).")
+            self.log("Likely Encrypted/Compressed: Major ransomware indicator.")
+        else:
+            self.log("✅ Low/Moderate Entropy.", "normal")
+            self.log("This is typical for normal, unencrypted files.")
+            
+        self.log("-" * 50)
+        
+        # --- Magic Byte Check ---
+        self.log("File Header (Magic Byte) Check:")
+        if not MAGIC_AVAILABLE:
+             self.log("⚠️ Module 'python-magic' not installed. Skipping header check.", "warning")
+             self.log("Run 'pip install python-magic' for full analysis.")
+             return
+             
+        try:
+            # Using the MIME type check
+            file_type = magic.Magic(mime=True).from_file(file_path)
+            self.log(f"Detected MIME Type: {file_type}")
+
+            if 'application/octet-stream' in file_type or 'data' in file_type:
+                self.log("⚠️ **WARNING: Generic File Type Detected!**", "suspicious")
+                self.log("Header overwritten: Another strong encryption indicator.")
+            else:
+                self.log("✨ Known file type detected.", "normal")
+                self.log("Header is intact, but content may still be encrypted.")
+                
+        except Exception as e:
+             self.log(f"❌ Error during magic byte check: {e}", "error")
+
+def analyze_pe_file(file_path):
+    """
+    Analyzes a Portable Executable (PE) file using the pefile library 
+    and prints key features relevant to malware detection.
+    """
+    if not os.path.exists(file_path):
+        print(f"❌ Error: File not found at {file_path}")
+        return
+
+    try:
+        # Load the PE file
+        pe = pefile.PE(file_path)
+    except pefile.PEFormatError as e:
+        print(f"❌ Error: Not a valid PE file or corrupted: {e}")
+        return
+    except Exception as e:
+        print(f"❌ An unexpected error occurred: {e}")
+        return
+
+    print("="*50)
+    print(f"PE ANALYSIS FOR: {os.path.basename(file_path)}")
+    print("="*50)
+
+    # --- 1. Basic Headers & Metadata ---
+    try:
+        print(f"File Type: {'64-bit' if pe.FILE_HEADER.Machine == pefile.MACHINE_TYPE['IMAGE_FILE_MACHINE_AMD64'] else '32-bit'}")
+        print(f"Time Date Stamp: {pe.FILE_HEADER.TimeDateStamp} (Compilation Time)")
+        print(f"Entry Point RVA: {pe.OPTIONAL_HEADER.AddressOfEntryPoint:#x}")
+    except AttributeError:
+        print("Warning: Optional Header data missing.")
+    
+    print("-" * 50)
+    
+    # --- 2. Section Analysis (Looking for suspicious sizes or names) ---
+    print("2. SECTION ANALYSIS:")
+    for section in pe.sections:
+        section_name = section.Name.decode('utf-8', errors='ignore').strip('\x00')
+        print(f"  Name: {section_name:<10} | Virtual Size: {section.Misc_VirtualSize:#x} | Raw Size: {section.SizeOfRawData:#x} | Characteristics: {section.Characteristics:#x}")
+
+        # Common indicators for packing/compression:
+        # 1. Raw Size (on disk) is much smaller than Virtual Size (in memory)
+        # 2. Suspicious Section Names (e.g., UPX0, .adata, .rdata, non-standard names)
+    
+    print("-" * 50)
+
+    # --- 3. Imported Functions (The most valuable static feature) ---
+    print("3. IMPORTED FUNCTIONS (API Calls):")
+    
+    # Define a list of high-risk libraries/APIs for quick flagging
+    # These often indicate behavior like process injection, self-defense, or crypto.
+    HIGH_RISK_LIBRARIES = ['kernel32.dll', 'ntdll.dll', 'advapi32.dll']
+    HIGH_RISK_APIS = ['CreateRemoteThread', 'WriteProcessMemory', 'VirtualAllocEx', 'RegCreateKey', 'StartService']
+    
+    if hasattr(pe, 'DIRECTORY_ENTRY_IMPORT'):
+        for entry in pe.DIRECTORY_ENTRY_IMPORT:
+            library_name = entry.dll.decode('utf-8').lower()
+            
+            # Check for high-risk libraries
+            if library_name in HIGH_RISK_LIBRARIES:
+                 print(f"  [🚨] Library: {library_name}")
+            else:
+                 print(f"  [ ] Library: {library_name}")
+            
+            for imp in entry.imports:
+                if imp.name:
+                    function_name = imp.name.decode('utf-8')
+                    # Check for high-risk API calls
+                    if function_name in HIGH_RISK_APIS:
+                        print(f"    [🚨] Function: {function_name}")
+                    else:
+                        print(f"    [ ] Function: {function_name}")
+    else:
+        print("  No imported functions found (may be statically compiled or obfuscated).")
+
+    print("="*50)
+
+if __name__ == '__main__':
+    # NOTE: Replace this path with the path to a real .exe or .dll file for testing!
+    # Example for demonstration:
+    # file_to_analyze = r"C:\Windows\System32\notepad.exe" 
+    
+    if len(sys.argv) > 1:
+        analyze_pe_file(sys.argv[1])
+    else:
+        print("Usage: python your_script_name.py <path_to_pe_file>")
+        # Example to run the analysis:
+        # analyze_pe_file(r"C:\Windows\System32\notepad.exe")
+# --- NEW FUNCTION: HASH CALCULATION ---
+def calculate_file_hash(file_path, hash_algorithm='sha256'):
+    """Calculates the hash of a file using the specified algorithm."""
+    h = hashlib.new(hash_algorithm)
+    try:
+        with open(file_path, 'rb') as file:
+            # Read and update hash string chunk by chunk
+            while chunk := file.read(4096):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception as e:
+        return f"Error calculating hash: {e}"
+
+# --- OPTIONAL: ONLINE CHECK PLACEHOLDER ---
+def check_hash_online(file_hash):
+    """Placeholder for checking hash against an online service (e.g., VirusTotal)."""
+    # NOTE: To use this, you must implement the API logic (requires an API key).
+    # This example only returns a generic message.
+    if len(file_hash) == 64: # SHA256 length
+        return (
+            "\n[Online Check Guide]\n"
+            "Search this hash on VirusTotal to check for known malware matches."
+        )
+    return ""
+# Integrate Hash Analysis into run_analysis
+# Modify the run_analysis method inside your EntropyAnalyzerApp class:
+
+# Python
+
+# In EntropyAnalyzerApp class, update the run_analysis method:
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = EntropyAnalyzerApp(root)
+    # Configure error and warning tags for the text widget
+    app.results_text.tag_config("error", foreground="red")
+    app.results_text.tag_config("suspicious", foreground="red", font=("Consolas", 9, "bold"))
+    app.results_text.tag_config("warning", foreground="orange")
+    app.results_text.tag_config("normal", foreground="green")
+    
+    root.mainloop()
